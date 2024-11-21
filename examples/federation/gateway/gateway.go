@@ -66,7 +66,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler := g.gqlHandler
 	g.mu.Unlock()
 
-	handler.ServeHTTP(w, r)
+	// if the method is a HEAD method and return 200
+	if r.Method == http.MethodOptions {
+		// add the CORS headers
+		w.Header().Add("Access-Control-Allow-Origin", "*")
+		w.Header().Add("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Wg-Trace")
+		w.WriteHeader(http.StatusOK)
+
+	} else {
+		handler.ServeHTTP(w, r)
+	}
+
 }
 
 func (g *Gateway) Ready() {

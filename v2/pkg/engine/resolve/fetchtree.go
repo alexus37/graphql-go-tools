@@ -17,6 +17,7 @@ const (
 	FetchTreeNodeKindSingle   FetchTreeNodeKind = "Single"
 	FetchTreeNodeKindSequence FetchTreeNodeKind = "Sequence"
 	FetchTreeNodeKindParallel FetchTreeNodeKind = "Parallel"
+	FetchTreeNodeKindMulti    FetchTreeNodeKind = "Multi"
 )
 
 func Sequence(children ...*FetchTreeNode) *FetchTreeNode {
@@ -29,6 +30,13 @@ func Sequence(children ...*FetchTreeNode) *FetchTreeNode {
 func Parallel(children ...*FetchTreeNode) *FetchTreeNode {
 	return &FetchTreeNode{
 		Kind:       FetchTreeNodeKindParallel,
+		ChildNodes: children,
+	}
+}
+
+func Multi(children []*FetchTreeNode) *FetchTreeNode {
+	return &FetchTreeNode{
+		Kind:       FetchTreeNodeKindMulti,
 		ChildNodes: children,
 	}
 }

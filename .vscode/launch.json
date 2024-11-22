@@ -13,6 +13,8 @@
       "cwd": "${workspaceFolder}",
       "env": {},
       "args": []
+      // TODO make this work add a preLaunchTask to build the program
+      // "preLaunchTask": "build"
     }
   ]
 }

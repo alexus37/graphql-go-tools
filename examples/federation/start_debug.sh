@@ -10,11 +10,11 @@ kill -9 $(lsof -t -i:4001)
 kill -9 $(lsof -t -i:4002)
 kill -9 $(lsof -t -i:4003)
 
-echo "Building services"
-go build -o /tmp/srv-accounts ./accounts
-go build -o /tmp/srv-products ./products
-go build -o /tmp/srv-reviews ./reviews
-go build -o /tmp/srv-gateway ./gateway
+echo "Building accounts"
+go build -gcflags=all="-N -l" -o /tmp/srv-accounts ./accounts
+go build -gcflags=all="-N -l" -o /tmp/srv-products ./products
+go build -gcflags=all="-N -l" -o /tmp/srv-reviews ./reviews
+go build -gcflags=all="-N -l" -o /tmp/srv-gateway ./gateway
 
 echo "Starting services"
 /tmp/srv-accounts &

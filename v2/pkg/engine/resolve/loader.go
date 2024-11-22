@@ -108,6 +108,50 @@ func (l *Loader) resolveFetchNode(node *FetchTreeNode) error {
 	}
 }
 
+func (l *Loader) resolveMulti(ctx context.Context, multiNode *FetchTreeNode, item []*astjson.Value, result *result) error {
+	// for each singleFetch create the final http input including the query and the variables
+	httpInputs := make([][]byte, len(multiNode.ChildNodes))
+
+	for _, node := range multiNode.ChildNodes {
+		fetchInput, error := l.createHTTPInput(ctx, node)
+		if error != nil {
+			return error
+		}
+		httpInputs = append(httpInputs, fetchInput)
+	}
+
+	//merge all the http inputs into a single http "multi" request using aliases
+
+	//send the request and
+
+	return nil
+}
+
+func (l *Loader) createHTTPInput(ctx context.Context, node *FetchTreeNode) ([]byte, error) {
+	// only support entity and batch entity fetches
+	switch node.Item.Fetch.(type) {
+	case *EntityFetch:
+		items := l.selectItemsForPath(node.Item.FetchPath)
+		return l.getLoadEntityFetchInput(ctx, node.Item, node.Item.Fetch.(*EntityFetch), items)
+	case *BatchEntityFetch:
+		items := l.selectItemsForPath(node.Item.FetchPath)
+		return l.getLoadBatchEntityFetchInput(ctx, node.Item, node.Item.Fetch.(*BatchEntityFetch), items)
+	default:
+
+		return []byte{}, fmt.Errorf("unsupported fetch type: %T", node.Item.Fetch)
+	}
+
+}
+
+func (l *Loader) mergeMultiResult(multiNode *FetchTreeNode, result *result) error {
+	// for _, node := range multiNode.ChildNodes {
+	// 	// extract the data from the result
+	// 	// run the post processing
+	// 	// merge the result into the final result
+	// }
+	return nil
+}
+
 func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 	if len(nodes) == 0 {
 		return nil
@@ -118,8 +162,16 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 	for i := range nodes {
 		i := i
 		results[i] = &result{}
-		itemsItems[i] = l.selectItemsForPath(nodes[i].Item.FetchPath)
+		if nodes[i].Kind != FetchTreeNodeKindMulti {
+			itemsItems[i] = l.selectItemsForPath(nodes[i].Item.FetchPath)
+		}
 		g.Go(func() error {
+			// handle the multi case here
+			if nodes[i].Kind == FetchTreeNodeKindMulti {
+				// Do we need all these params (ctx, nodes[i].Item.Fetch, nodes[i].Item, itemsItems[i], results[i])
+				return l.resolveMulti(ctx, nodes[i], itemsItems[i], results[i])
+			}
+
 			return l.loadFetch(ctx, nodes[i].Item.Fetch, nodes[i].Item, itemsItems[i], results[i])
 		})
 	}
@@ -128,25 +180,34 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 		return errors.WithStack(err)
 	}
 	for i := range results {
-		if results[i].nestedMergeItems != nil {
-			for j := range results[i].nestedMergeItems {
-				err = l.mergeResult(nodes[i].Item, results[i].nestedMergeItems[j], itemsItems[i][j:j+1])
-				if l.ctx.LoaderHooks != nil && results[i].nestedMergeItems[j].loaderHookContext != nil {
-					l.ctx.LoaderHooks.OnFinished(results[i].nestedMergeItems[j].loaderHookContext, results[i].nestedMergeItems[j].statusCode, results[i].nestedMergeItems[j].ds, goerrors.Join(results[i].nestedMergeItems[j].err, l.ctx.subgraphErrors))
+		// if the result is a multi, we need to entangle the results
+		if nodes[i].Kind == FetchTreeNodeKindMulti {
+			err = l.mergeMultiResult(nodes[i], results[i])
+			if err != nil {
+				return errors.WithStack(err)
+			}
+		} else {
+			if results[i].nestedMergeItems != nil {
+				for j := range results[i].nestedMergeItems {
+					err = l.mergeResult(nodes[i].Item, results[i].nestedMergeItems[j], itemsItems[i][j:j+1])
+					if l.ctx.LoaderHooks != nil && results[i].nestedMergeItems[j].loaderHookContext != nil {
+						l.ctx.LoaderHooks.OnFinished(results[i].nestedMergeItems[j].loaderHookContext, results[i].nestedMergeItems[j].statusCode, results[i].nestedMergeItems[j].ds, goerrors.Join(results[i].nestedMergeItems[j].err, l.ctx.subgraphErrors))
+					}
+					if err != nil {
+						return errors.WithStack(err)
+					}
+				}
+			} else {
+				err = l.mergeResult(nodes[i].Item, results[i], itemsItems[i])
+				if l.ctx.LoaderHooks != nil && results[i].loaderHookContext != nil {
+					l.ctx.LoaderHooks.OnFinished(results[i].loaderHookContext, results[i].statusCode, results[i].ds, goerrors.Join(results[i].err, l.ctx.subgraphErrors))
 				}
 				if err != nil {
 					return errors.WithStack(err)
 				}
 			}
-		} else {
-			err = l.mergeResult(nodes[i].Item, results[i], itemsItems[i])
-			if l.ctx.LoaderHooks != nil && results[i].loaderHookContext != nil {
-				l.ctx.LoaderHooks.OnFinished(results[i].loaderHookContext, results[i].statusCode, results[i].ds, goerrors.Join(results[i].err, l.ctx.subgraphErrors))
-			}
-			if err != nil {
-				return errors.WithStack(err)
-			}
 		}
+
 	}
 	return nil
 }
@@ -1152,8 +1213,7 @@ func releaseEntityFetchBuffer(buf *entityFetchBuffer) {
 	entityFetchPool.Put(buf)
 }
 
-func (l *Loader) loadEntityFetch(ctx context.Context, fetchItem *FetchItem, fetch *EntityFetch, items []*astjson.Value, res *result) error {
-	res.init(fetch.PostProcessing, fetch.Info)
+func (l *Loader) getLoadEntityFetchInput(ctx context.Context, fetchItem *FetchItem, fetch *EntityFetch, items []*astjson.Value) ([]byte, error) {
 	buf := acquireEntityFetchBuffer()
 	defer releaseEntityFetchBuffer(buf)
 	l.itemsData(items, buf.itemData)
@@ -1169,7 +1229,7 @@ func (l *Loader) loadEntityFetch(ctx context.Context, fetchItem *FetchItem, fetc
 
 	err := fetch.Input.Header.RenderAndCollectUndefinedVariables(l.ctx, nil, buf.preparedInput, &undefinedVariables)
 	if err != nil {
-		return errors.WithStack(err)
+		return []byte{}, errors.WithStack(err)
 	}
 
 	err = fetch.Input.Item.Render(l.ctx, buf.itemData.Bytes(), buf.item)
@@ -1180,52 +1240,61 @@ func (l *Loader) loadEntityFetch(ctx context.Context, fetchItem *FetchItem, fetc
 			if l.ctx.TracingOptions.Enable {
 				fetch.Trace.LoadSkipped = true
 			}
-			return nil
+			return []byte{}, nil
 		}
-		return errors.WithStack(err)
+		return []byte{}, errors.WithStack(err)
 	}
 	renderedItem := buf.item.Bytes()
 	if bytes.Equal(renderedItem, null) {
 		// skip fetch if item is null
-		res.fetchSkipped = true
+		// res.fetchSkipped = true
 		if l.ctx.TracingOptions.Enable {
 			fetch.Trace.LoadSkipped = true
 		} else {
-			return nil
+			return []byte{}, nil
 		}
 	}
 	if bytes.Equal(renderedItem, emptyObject) {
 		// skip fetch if item is empty
-		res.fetchSkipped = true
+		// res.fetchSkipped = true
 		if l.ctx.TracingOptions.Enable {
 			fetch.Trace.LoadSkipped = true
 		} else {
-			return nil
+			return []byte{}, nil
 		}
 	}
 	_, _ = buf.item.WriteTo(buf.preparedInput)
 	err = fetch.Input.Footer.RenderAndCollectUndefinedVariables(l.ctx, nil, buf.preparedInput, &undefinedVariables)
 	if err != nil {
-		return errors.WithStack(err)
+		return []byte{}, errors.WithStack(err)
 	}
 
 	err = SetInputUndefinedVariables(buf.preparedInput, undefinedVariables)
 	if err != nil {
-		return errors.WithStack(err)
+		return []byte{}, errors.WithStack(err)
 	}
 	fetchInput := buf.preparedInput.Bytes()
 
-	if l.ctx.TracingOptions.Enable && res.fetchSkipped {
-		l.setTracingInput(fetchItem, fetchInput, fetch.Trace)
-		return nil
-	}
+	// if l.ctx.TracingOptions.Enable && res.fetchSkipped {
+	// 	l.setTracingInput(fetchItem, fetchInput, fetch.Trace)
+	// 	return nil
+	// }
 
-	allowed, err := l.validatePreFetch(fetchInput, fetch.Info, res)
+	// allowed, err := l.validatePreFetch(fetchInput, fetch.Info, res)
+	// if err != nil {
+	// 	return err
+	// }
+	// if !allowed {
+	// 	return nil
+	// }
+	return fetchInput, nil
+}
+
+func (l *Loader) loadEntityFetch(ctx context.Context, fetchItem *FetchItem, fetch *EntityFetch, items []*astjson.Value, res *result) error {
+	res.init(fetch.PostProcessing, fetch.Info)
+	fetchInput, err := l.getLoadEntityFetchInput(ctx, fetchItem, fetch, items)
 	if err != nil {
 		return err
-	}
-	if !allowed {
-		return nil
 	}
 	l.executeSourceLoad(ctx, fetchItem, fetch.DataSource, fetchInput, res, fetch.Trace)
 	return nil
@@ -1263,6 +1332,20 @@ func releaseBatchEntityFetchBuffer(buf *batchEntityFetchBuffer) {
 func (l *Loader) loadBatchEntityFetch(ctx context.Context, fetchItem *FetchItem, fetch *BatchEntityFetch, items []*astjson.Value, res *result) error {
 	res.init(fetch.PostProcessing, fetch.Info)
 
+	fetchInput, err := l.getLoadBatchEntityFetchInput(ctx, fetchItem, fetch, items)
+	if err != nil {
+		return err
+	}
+	if len(fetchInput) == 0 {
+		res.fetchSkipped = true
+		return nil
+	}
+
+	l.executeSourceLoad(ctx, fetchItem, fetch.DataSource, fetchInput, res, fetch.Trace)
+	return nil
+}
+
+func (l *Loader) getLoadBatchEntityFetchInput(ctx context.Context, fetchItem *FetchItem, fetch *BatchEntityFetch, items []*astjson.Value) ([]byte, error) {
 	buf := acquireBatchEntityFetchBuffer()
 	defer releaseBatchEntityFetchBuffer(buf)
 
@@ -1279,16 +1362,16 @@ func (l *Loader) loadBatchEntityFetch(ctx context.Context, fetchItem *FetchItem,
 
 	err := fetch.Input.Header.RenderAndCollectUndefinedVariables(l.ctx, nil, buf.preparedInput, &undefinedVariables)
 	if err != nil {
-		return errors.WithStack(err)
+		return []byte{}, errors.WithStack(err)
 	}
-	res.batchStats = make([][]int, len(items))
+	// res.batchStats = make([][]int, len(items))
 	itemHashes := make([]uint64, 0, len(items)*len(fetch.Input.Items))
 	batchItemIndex := 0
 	addSeparator := false
 	itemData := make([]byte, 0, 1024)
 
 WithNextItem:
-	for i, item := range items {
+	for _, item := range items {
 		itemData = item.MarshalTo(itemData[:0])
 		for j := range fetch.Input.Items {
 			buf.itemInput.Reset()
@@ -1296,20 +1379,20 @@ WithNextItem:
 			if err != nil {
 				if fetch.Input.SkipErrItems {
 					err = nil // nolint:ineffassign
-					res.batchStats[i] = append(res.batchStats[i], -1)
+					// res.batchStats[i] = append(res.batchStats[i], -1)
 					continue
 				}
 				if l.ctx.TracingOptions.Enable {
 					fetch.Trace.LoadSkipped = true
 				}
-				return errors.WithStack(err)
+				return []byte{}, errors.WithStack(err)
 			}
 			if fetch.Input.SkipNullItems && buf.itemInput.Len() == 4 && bytes.Equal(buf.itemInput.Bytes(), null) {
-				res.batchStats[i] = append(res.batchStats[i], -1)
+				// res.batchStats[i] = append(res.batchStats[i], -1)
 				continue
 			}
 			if fetch.Input.SkipEmptyObjectItems && buf.itemInput.Len() == 2 && bytes.Equal(buf.itemInput.Bytes(), emptyObject) {
-				res.batchStats[i] = append(res.batchStats[i], -1)
+				// res.batchStats[i] = append(res.batchStats[i], -1)
 				continue
 			}
 
@@ -1318,7 +1401,7 @@ WithNextItem:
 			itemHash := buf.keyGen.Sum64()
 			for k := range itemHashes {
 				if itemHashes[k] == itemHash {
-					res.batchStats[i] = append(res.batchStats[i], k)
+					// res.batchStats[i] = append(res.batchStats[i], k)
 					continue WithNextItem
 				}
 			}
@@ -1326,11 +1409,11 @@ WithNextItem:
 			if addSeparator {
 				err = fetch.Input.Separator.Render(l.ctx, nil, buf.preparedInput)
 				if err != nil {
-					return errors.WithStack(err)
+					return []byte{}, errors.WithStack(err)
 				}
 			}
 			_, _ = buf.itemInput.WriteTo(buf.preparedInput)
-			res.batchStats[i] = append(res.batchStats[i], batchItemIndex)
+			// res.batchStats[i] = append(res.batchStats[i], batchItemIndex)
 			batchItemIndex++
 			addSeparator = true
 		}
@@ -1338,39 +1421,38 @@ WithNextItem:
 
 	if len(itemHashes) == 0 {
 		// all items were skipped - discard fetch
-		res.fetchSkipped = true
+		// res.fetchSkipped = true
 		if l.ctx.TracingOptions.Enable {
 			fetch.Trace.LoadSkipped = true
 		} else {
-			return nil
+			return []byte{}, nil
 		}
 	}
 
 	err = fetch.Input.Footer.RenderAndCollectUndefinedVariables(l.ctx, nil, buf.preparedInput, &undefinedVariables)
 	if err != nil {
-		return errors.WithStack(err)
+		return []byte{}, errors.WithStack(err)
 	}
 
 	err = SetInputUndefinedVariables(buf.preparedInput, undefinedVariables)
 	if err != nil {
-		return errors.WithStack(err)
+		return []byte{}, errors.WithStack(err)
 	}
 	fetchInput := buf.preparedInput.Bytes()
 
-	if l.ctx.TracingOptions.Enable && res.fetchSkipped {
-		l.setTracingInput(fetchItem, fetchInput, fetch.Trace)
-		return nil
-	}
+	// if l.ctx.TracingOptions.Enable && res.fetchSkipped {
+	// 	l.setTracingInput(fetchItem, fetchInput, fetch.Trace)
+	// 	return []byte{}, nil
+	// }
 
-	allowed, err := l.validatePreFetch(fetchInput, fetch.Info, res)
+	// allowed, err := l.validatePreFetch(fetchInput, fetch.Info, res)
 	if err != nil {
-		return err
+		return []byte{}, err
 	}
-	if !allowed {
-		return nil
-	}
-	l.executeSourceLoad(ctx, fetchItem, fetch.DataSource, fetchInput, res, fetch.Trace)
-	return nil
+	// if !allowed {
+	// 	return []byte{}, nil
+	// }
+	return fetchInput, nil
 }
 
 func redactHeaders(rawJSON json.RawMessage) (json.RawMessage, error) {

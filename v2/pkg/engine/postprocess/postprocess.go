@@ -32,6 +32,7 @@ type processorOptions struct {
 	disableResolveInputTemplates          bool
 	disableExtractFetches                 bool
 	disableCreateParallelNodes            bool
+	disableCreateMultiNodes               bool
 	disableAddMissingNestedDependencies   bool
 	collectDataSourceInfo                 bool
 }
@@ -53,6 +54,12 @@ func DisableCreateConcreteSingleFetchTypes() ProcessorOption {
 func DisableMergeFields() ProcessorOption {
 	return func(o *processorOptions) {
 		o.disableMergeFields = true
+	}
+}
+
+func DisableCreateMultiNodes() ProcessorOption {
+	return func(o *processorOptions) {
+		o.disableCreateMultiNodes = true
 	}
 }
 
@@ -115,6 +122,10 @@ func NewProcessor(options ...ProcessorOption) *Processor {
 			},
 			&createParallelNodes{
 				disable: opts.disableCreateParallelNodes,
+			},
+			&createMultiNodes{
+				// disable: true,
+				disable: opts.disableCreateMultiNodes,
 			},
 		},
 		processResponseTree: []ResponseTreeProcessor{

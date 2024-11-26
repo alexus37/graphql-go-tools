@@ -180,19 +180,15 @@ func (l *Loader) resolveMulti(ctx context.Context, multiNode *FetchTreeNode, res
 		return err
 	}
 
-	fetchItem := multiNode.ChildNodes[0].Item
 	fetch := multiNode.ChildNodes[0].Item.Fetch
 	var dataSource DataSource
-	var trace *DataSourceLoadTrace
 	var fetchInfo *FetchInfo
 	switch f := fetch.(type) {
 	case *BatchEntityFetch:
 		dataSource = f.DataSource
-		trace = f.Trace
 		fetchInfo = f.Info
 	case *EntityFetch:
 		dataSource = f.DataSource
-		trace = f.Trace
 		fetchInfo = f.Info
 	default:
 		return fmt.Errorf("unsupported fetch type: %T", fetch)
@@ -200,8 +196,9 @@ func (l *Loader) resolveMulti(ctx context.Context, multiNode *FetchTreeNode, res
 
 	result.init(PostProcessingConfiguration{}, fetchInfo)
 	result.out = acquireLoaderBuf()
+	trace := multiNode.Item.Fetch.(*SingleFetch).Trace
 	//send the request to the data source
-	l.executeSourceLoad(ctx, fetchItem, dataSource, fetchInputMutli, result, trace)
+	l.executeSourceLoad(ctx, multiNode.Item, dataSource, fetchInputMutli, result, trace)
 
 	return nil
 }

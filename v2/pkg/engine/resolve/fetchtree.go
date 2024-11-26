@@ -38,6 +38,11 @@ func Multi(children []*FetchTreeNode) *FetchTreeNode {
 	return &FetchTreeNode{
 		Kind:       FetchTreeNodeKindMulti,
 		ChildNodes: children,
+		Item: &FetchItem{
+			Fetch: &SingleFetch{
+				Trace: &DataSourceLoadTrace{},
+			},
+		},
 	}
 }
 
@@ -147,7 +152,17 @@ func (n *FetchTreeNode) Trace() *FetchTreeTraceNode {
 		for i, c := range n.ChildNodes {
 			trace.Children[i] = c.Trace()
 		}
+	case FetchTreeNodeKindMulti:
+		f := n.Item.Fetch.(*SingleFetch)
+		trace.Fetch = &FetchTraceNode{
+			Kind: "Multi",
+			// SourceID:   f.Info.DataSourceID,
+			// SourceName: f.Info.DataSourceName,
+			Trace: f.Trace,
+			// Path:       n.Item.ResponsePath,
+		}
 	}
+
 	return trace
 }
 

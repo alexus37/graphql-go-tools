@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -968,4 +969,70 @@ func TestLoader_RedactHeaders(t *testing.T) {
 	default:
 		t.Errorf("Incorrect fetch type")
 	}
+}
+func TestLoader_createMultiQueryPartsFromFetch(t *testing.T) {
+	loader := &Loader{}
+	entityQuery := []byte(`query($representations: [_Any!]!) {
+		_entities(representations: $representations) {
+			... on Product {
+				__typename
+				otherField
+			}
+		}
+	`)
+	anotherEntity := []byte(`query($representations: [_Any!]!) {
+		_entities(representations: $representations) {
+			... on User {
+				__typename
+				someField
+			}
+		}
+	`)
+
+	multiFetchQueryArgs := []byte(`query MultiFetch(`)
+	multiFetchQueryContent := []byte{}
+
+	loader.createMultiQueryPartsFromFetch(entityQuery, 1, false, &multiFetchQueryArgs, &multiFetchQueryContent)
+	loader.createMultiQueryPartsFromFetch(anotherEntity, 2, true, &multiFetchQueryArgs, &multiFetchQueryContent)
+	finalQuery := append(multiFetchQueryArgs, []byte(fmt.Sprintf("\n%s}", multiFetchQueryContent))...)
+
+	expectedContent := `query MultiFetch($f_1representations: [_Any!]!, $f_2representations: [_Any!]!) {
+f_1: 
+		_entities(representations: $f_1representations) {
+			... on Product {
+				__typename
+				otherField
+			}
+		}
+f_2: 
+		_entities(representations: $f_2representations) {
+			... on User {
+				__typename
+				someField
+			}
+		}
+}`
+
+	assert.Equal(t, expectedContent, string(finalQuery))
+}
+
+func TestLoader_extractVariablesForMultiQuery(t *testing.T) {
+	loader := &Loader{}
+	variableString := []byte(`{"id": "123", "name": "John"}`)
+	secondVariableString := []byte(`{"id": "456", "name": "Jane"}`)
+	multiFetchVariables := make(map[string]interface{})
+
+	err := loader.extractVariablesForMultiQuery(variableString, 1, &multiFetchVariables)
+	assert.NoError(t, err)
+	err = loader.extractVariablesForMultiQuery(secondVariableString, 2, &multiFetchVariables)
+	assert.NoError(t, err)
+
+	expectedVariables := map[string]interface{}{
+		"f_1id":   "123",
+		"f_1name": "John",
+		"f_2id":   "456",
+		"f_2name": "Jane",
+	}
+
+	assert.Equal(t, expectedVariables, multiFetchVariables)
 }

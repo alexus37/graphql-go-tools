@@ -34,12 +34,25 @@ func (c *createMultiNodes) handleParallelNode(node *resolve.FetchTreeNode) {
 	var newChildNodes []*resolve.FetchTreeNode
 	// iterate over the groups and create a multi nodes for each group wiht more then 2 nodes
 	for _, group := range groups {
-		if len(group) > 1 {
+		// select all fetches that are entity or batch entity fetches
+		entityFetches := make([]*resolve.FetchTreeNode, 0, len(group))
+		for _, child := range group {
+			// check if the fetch is an entity or batch entity fetch
+			switch child.Item.Fetch.(type) {
+			case *resolve.EntityFetch, *resolve.BatchEntityFetch:
+				entityFetches = append(entityFetches, child)
+			default:
+				newChildNodes = append(newChildNodes, child)
+			}
+
+		}
+
+		if len(entityFetches) > 1 {
 			// create a new multi node
-			multiNode := resolve.Multi(group)
+			multiNode := resolve.Multi(entityFetches)
 			newChildNodes = append(newChildNodes, multiNode)
-		} else {
-			newChildNodes = append(newChildNodes, group[0])
+		} else if len(entityFetches) == 1 {
+			newChildNodes = append(newChildNodes, entityFetches[0])
 		}
 	}
 

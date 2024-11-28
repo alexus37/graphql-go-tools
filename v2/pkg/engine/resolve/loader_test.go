@@ -3,7 +3,6 @@ package resolve
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -970,41 +969,39 @@ func TestLoader_RedactHeaders(t *testing.T) {
 		t.Errorf("Incorrect fetch type")
 	}
 }
-func TestLoader_createMultiQueryPartsFromFetch(t *testing.T) {
-	loader := &Loader{}
-	entityQuery := []byte(`query($representations: [_Any!]!) {
+
+func TestLoader_createMultiFetchQuery(t *testing.T) {
+	queries := []string{
+		`query($representations: [_Any!]!) {
 		_entities(representations: $representations) {
 			... on Product {
 				__typename
 				otherField
 			}
 		}
-	`)
-	anotherEntity := []byte(`query($representations: [_Any!]!) {
+	`,
+		`query($representations: [_Any!]!) {
 		_entities(representations: $representations) {
 			... on User {
 				__typename
 				someField
 			}
 		}
-	`)
+	`}
 
-	multiFetchQueryArgs := []byte(`query MultiFetch(`)
-	multiFetchQueryContent := []byte{}
-
-	loader.createMultiQueryPartsFromFetch(entityQuery, 1, false, &multiFetchQueryArgs, &multiFetchQueryContent)
-	loader.createMultiQueryPartsFromFetch(anotherEntity, 2, true, &multiFetchQueryArgs, &multiFetchQueryContent)
-	finalQuery := append(multiFetchQueryArgs, []byte(fmt.Sprintf("\n%s}", multiFetchQueryContent))...)
+	loader := &Loader{}
+	finalQuery, err := loader.createMultiFetchQuery(queries, []int{1, 2})
+	assert.NoError(t, err)
 
 	expectedContent := `query MultiFetch($f_1representations: [_Any!]!, $f_2representations: [_Any!]!) {
-f_1: 
+f_1:
 		_entities(representations: $f_1representations) {
 			... on Product {
 				__typename
 				otherField
 			}
 		}
-f_2: 
+f_2:
 		_entities(representations: $f_2representations) {
 			... on User {
 				__typename
@@ -1016,15 +1013,14 @@ f_2:
 	assert.Equal(t, expectedContent, string(finalQuery))
 }
 
-func TestLoader_extractVariablesForMultiQuery(t *testing.T) {
-	loader := &Loader{}
-	variableString := []byte(`{"id": "123", "name": "John"}`)
-	secondVariableString := []byte(`{"id": "456", "name": "Jane"}`)
-	multiFetchVariables := make(map[string]interface{})
+func TestLoader_extractMultiFetchVariables(t *testing.T) {
+	variableStrings := []string{
+		`{"id": "123", "name": "John"}`,
+		`{"id": "456", "name": "Jane"}`,
+	}
 
-	err := loader.extractVariablesForMultiQuery(variableString, 1, &multiFetchVariables)
-	assert.NoError(t, err)
-	err = loader.extractVariablesForMultiQuery(secondVariableString, 2, &multiFetchVariables)
+	loader := &Loader{}
+	variables, err := loader.extractMultiFetchVariables(variableStrings, []int{1, 2})
 	assert.NoError(t, err)
 
 	expectedVariables := map[string]interface{}{
@@ -1034,5 +1030,5 @@ func TestLoader_extractVariablesForMultiQuery(t *testing.T) {
 		"f_2name": "Jane",
 	}
 
-	assert.Equal(t, expectedVariables, multiFetchVariables)
+	assert.Equal(t, expectedVariables, variables)
 }

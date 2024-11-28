@@ -108,184 +108,6 @@ func (l *Loader) resolveFetchNode(node *FetchTreeNode) error {
 	}
 }
 
-func (l *Loader) createMultiQueryPartsFromFetch(queryString []byte, fetchID int, isLast bool, multiFetchQueryArgs, multiFetchQueryContent *[]byte) {
-	// find and replace all dollar signs in the byte array with the f + fetchID
-	// this is done to avoid conflicts with the variables in the query
-	// TODO: make sure we only replace the dollar signs in the query variables not elsewhere in the query
-	multiQueryString := bytes.ReplaceAll(queryString, []byte("$"), []byte("$f_"+strconv.Itoa(fetchID)))
-
-	// extract all variables from the querystring eg the text between `query(` and the first `)`
-	queryVariables := multiQueryString[bytes.Index(multiQueryString, []byte("("))+1 : bytes.Index(multiQueryString, []byte(")"))]
-	*multiFetchQueryArgs = append(*multiFetchQueryArgs, queryVariables...)
-	if isLast {
-		// this is the last fetch, so we need to close the argument list
-		*multiFetchQueryArgs = append(*multiFetchQueryArgs, []byte(") {")...)
-	} else {
-		// more arguments will follow, so we need to add a comma
-		*multiFetchQueryArgs = append(*multiFetchQueryArgs, []byte(", ")...)
-	}
-
-	// get the raw query string without the arguments and create a alias for the fetch
-	queryStringWithoutArgs := multiQueryString[bytes.Index(multiQueryString, []byte("{"))+1 : len(multiQueryString)-1]
-	*multiFetchQueryContent = append(*multiFetchQueryContent, []byte(fmt.Sprintf("f_%d: %s", fetchID, queryStringWithoutArgs))...)
-}
-
-func (l *Loader) extractVariablesForMultiQuery(variableString []byte, fetchID int, multiFetchVariables *map[string]interface{}) error {
-	variables := make(map[string]interface{})
-	err := json.Unmarshal(variableString, &variables)
-	if err != nil {
-		return err
-	}
-
-	for key, value := range variables {
-		newKey := fmt.Sprintf("f_%d%s", fetchID, key)
-		(*multiFetchVariables)[newKey] = value
-	}
-	return nil
-}
-
-func (l *Loader) getMultiFetchInput(multiNode *FetchTreeNode) ([]byte, error) {
-	// for each fetch create the final http input including the query and the variables
-	multiFetchVariables := make(map[string]interface{})
-	multiFetchQueryArgs := []byte(`query MultiFetch(`)
-	multiFetchQueryContent := []byte{}
-	var fetchInput []byte
-	var err error
-
-	for i, node := range multiNode.ChildNodes {
-		// get http input for the fetch
-		fetchInput, err = l.createHTTPInput(node)
-		if err != nil {
-			return []byte{}, err
-		}
-		fetchID := node.Item.Fetch.Dependencies().FetchID
-
-		// parse the fetchInput string
-		queryString, _, _, err := jsonparser.Get(fetchInput, "body", "query")
-		if err != nil {
-			return []byte{}, err
-		}
-		l.createMultiQueryPartsFromFetch(queryString, fetchID, i == len(multiNode.ChildNodes)-1, &multiFetchQueryArgs, &multiFetchQueryContent)
-
-		variableString, _, _, err := jsonparser.Get(fetchInput, "body", "variables")
-		if err != nil {
-			return []byte{}, err
-		}
-		// iterate over all the variables in the json and prefix each key with f_fetchID
-		err = l.extractVariablesForMultiQuery(variableString, fetchID, &multiFetchVariables)
-		if err != nil {
-			return []byte{}, err
-		}
-	}
-
-	finalQuery := append(multiFetchQueryArgs, []byte(fmt.Sprintf("\n%s}", multiFetchQueryContent))...)
-
-	// create the http multi fetch input using the last fetch input as a template
-	fetchInput, err = sjson.SetBytes(fetchInput, "body.query", string(finalQuery))
-	if err != nil {
-		return []byte{}, err
-	}
-
-	fetchInput, err = sjson.SetBytes(fetchInput, "body.variables", multiFetchVariables)
-	if err != nil {
-		return []byte{}, err
-	}
-	return fetchInput, nil
-
-}
-
-func (l *Loader) resolveMulti(ctx context.Context, multiNode *FetchTreeNode, result *result) error {
-	fetchInputMutli, err := l.getMultiFetchInput(multiNode)
-	if err != nil {
-		return err
-	}
-	fetch := multiNode.ChildNodes[0].Item.Fetch
-	var dataSource DataSource
-	var fetchInfo *FetchInfo
-	switch f := fetch.(type) {
-	case *BatchEntityFetch:
-		dataSource = f.DataSource
-		fetchInfo = f.Info
-	case *EntityFetch:
-		dataSource = f.DataSource
-		fetchInfo = f.Info
-	default:
-		return fmt.Errorf("unsupported fetch type: %T", fetch)
-	}
-
-	result.init(PostProcessingConfiguration{}, fetchInfo)
-	result.out = acquireLoaderBuf()
-	trace := multiNode.Item.Fetch.(*SingleFetch).Trace
-	//send the request to the data source
-	l.executeSourceLoad(ctx, multiNode.Item, dataSource, fetchInputMutli, result, trace)
-
-	return nil
-}
-
-func (l *Loader) createHTTPInput(node *FetchTreeNode) ([]byte, error) {
-	// only support entity and batch entity fetches
-	switch node.Item.Fetch.(type) {
-	case *EntityFetch:
-		items := l.selectItemsForPath(node.Item.FetchPath)
-		return l.getLoadEntityFetchInput(node.Item.Fetch.(*EntityFetch), items)
-	case *BatchEntityFetch:
-		items := l.selectItemsForPath(node.Item.FetchPath)
-		fetchInput, _, err := l.getLoadBatchEntityFetchInput(node.Item.Fetch.(*BatchEntityFetch), items)
-		return fetchInput, err
-	default:
-
-		return []byte{}, fmt.Errorf("unsupported fetch type: %T", node.Item.Fetch)
-	}
-
-}
-
-func (l *Loader) mergeMultiResult(multiNode *FetchTreeNode, res *result) error {
-	statusCode := res.statusCode
-	ds := res.ds
-	goError := res.err
-	loaderHookContext := res.loaderHookContext
-	for _, node := range multiNode.ChildNodes {
-
-		// TODO handle nestedMergeItems when merging
-
-		subResult := &result{
-			out: acquireLoaderBuf(),
-		}
-		var fetchInfo *FetchInfo
-		var postProcessing PostProcessingConfiguration
-		switch f := node.Item.Fetch.(type) {
-		case *BatchEntityFetch:
-			fetchInfo = f.Info
-			postProcessing = f.PostProcessing
-		case *EntityFetch:
-			fetchInfo = f.Info
-			postProcessing = f.PostProcessing
-		default:
-			return fmt.Errorf("unsupported fetch type: %T", f)
-		}
-
-		subResult.init(postProcessing, fetchInfo)
-		resultKey := fmt.Sprintf("f_%d", node.Item.Fetch.Dependencies().FetchID)
-		// extract the data from the result
-		subResultData := gjson.GetBytes(res.out.Bytes(), fmt.Sprintf("data.%s", resultKey))
-		subResult.out.Write([]byte(fmt.Sprintf(`{"data": {"_entities": %s}}`, subResultData.Raw)))
-
-		// run the post processing
-		// merge the result into the final result
-		itemsItems := l.selectItemsForPath(node.Item.FetchPath)
-
-		err := l.mergeResult(node.Item, subResult, itemsItems)
-
-		if l.ctx.LoaderHooks != nil && loaderHookContext != nil {
-			l.ctx.LoaderHooks.OnFinished(loaderHookContext, statusCode, ds, goerrors.Join(goError, l.ctx.subgraphErrors))
-		}
-		if err != nil {
-			return errors.WithStack(err)
-		}
-	}
-	return nil
-}
-
 func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 	if len(nodes) == 0 {
 		return nil
@@ -300,11 +122,9 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 			itemsItems[i] = l.selectItemsForPath(nodes[i].Item.FetchPath)
 		}
 		g.Go(func() error {
-			// handle the multi case here
 			if nodes[i].Kind == FetchTreeNodeKindMulti {
 				return l.resolveMulti(ctx, nodes[i], results[i])
 			}
-
 			return l.loadFetch(ctx, nodes[i].Item.Fetch, nodes[i].Item, itemsItems[i], results[i])
 		})
 	}
@@ -313,7 +133,7 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 		return errors.WithStack(err)
 	}
 	for i := range results {
-		// if the result is a multi, we need to entangle the results
+		// if the result is a multi, we need to disentangle the results
 		if nodes[i].Kind == FetchTreeNodeKindMulti {
 			err = l.mergeMultiResult(nodes[i], results[i])
 			if err != nil {
@@ -340,7 +160,6 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 				}
 			}
 		}
-
 	}
 	return nil
 }
@@ -440,6 +259,204 @@ func (l *Loader) resolveSingle(item *FetchItem) error {
 	default:
 		return nil
 	}
+}
+
+func (l *Loader) resolveMulti(ctx context.Context, multiNode *FetchTreeNode, result *result) error {
+	fetchInputMutli, err := l.getMultiFetchInput(multiNode)
+	if err != nil {
+		return err
+	}
+	fetch := multiNode.ChildNodes[0].Item.Fetch
+	var dataSource DataSource
+	var fetchInfo *FetchInfo
+	switch f := fetch.(type) {
+	case *BatchEntityFetch:
+		dataSource = f.DataSource
+		fetchInfo = f.Info
+	case *EntityFetch:
+		dataSource = f.DataSource
+		fetchInfo = f.Info
+	default:
+		return fmt.Errorf("unsupported fetch type: %T", fetch)
+	}
+
+	result.init(PostProcessingConfiguration{}, fetchInfo)
+	result.out = acquireLoaderBuf()
+	trace := multiNode.Item.Fetch.(*SingleFetch).Trace
+	//send the request to the data source
+	l.executeSourceLoad(ctx, multiNode.Item, dataSource, fetchInputMutli, result, trace)
+
+	return nil
+}
+
+func (l *Loader) getMultiFetchInput(multiNode *FetchTreeNode) ([]byte, error) {
+	// for each fetch create the final http input including the query and the variables
+	fetchIDs := make([]int, len(multiNode.ChildNodes))
+	queryStrings := make([]string, len(multiNode.ChildNodes))
+	variableStrings := make([]string, len(multiNode.ChildNodes))
+	var fetchInput []byte
+
+	for _, node := range multiNode.ChildNodes {
+		fetchID := node.Item.Fetch.Dependencies().FetchID
+		fetchIDs = append(fetchIDs, fetchID)
+
+		// get http input for the fetch
+		var err error
+		fetchInput, err = l.createHTTPInput(node)
+		if err != nil {
+			return []byte{}, err
+		}
+
+		// parse the fetchInput string
+		queryString, err := jsonparser.GetString(fetchInput, "body", "query")
+		if err != nil {
+			return []byte{}, err
+		}
+		queryStrings = append(queryStrings, queryString)
+
+		variableString, err := jsonparser.GetString(fetchInput, "body", "variables")
+		if err != nil {
+			return []byte{}, err
+		}
+		variableStrings = append(variableStrings, string(variableString))
+	}
+
+	finalQuery, err := l.createMultiFetchQuery(queryStrings, fetchIDs)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	// iterate over all the variables in the json and prefix each key with f_fetchID
+	variables, err := l.extractMultiFetchVariables(variableStrings, fetchIDs)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	// create the http multi fetch input using the last fetch input as a template
+	fetchInput, err = sjson.SetBytes(fetchInput, "body.query", finalQuery)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	fetchInput, err = sjson.SetBytes(fetchInput, "body.variables", variables)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	return fetchInput, nil
+}
+
+func (l *Loader) createHTTPInput(node *FetchTreeNode) ([]byte, error) {
+	// only support entity and batch entity fetches
+	switch node.Item.Fetch.(type) {
+	case *EntityFetch:
+		items := l.selectItemsForPath(node.Item.FetchPath)
+		return l.getLoadEntityFetchInput(node.Item.Fetch.(*EntityFetch), items)
+	case *BatchEntityFetch:
+		items := l.selectItemsForPath(node.Item.FetchPath)
+		fetchInput, _, err := l.getLoadBatchEntityFetchInput(node.Item.Fetch.(*BatchEntityFetch), items)
+		return fetchInput, err
+	default:
+		return []byte{}, fmt.Errorf("unsupported fetch type: %T", node.Item.Fetch)
+	}
+}
+
+func (l *Loader) extractMultiFetchVariables(variableStrings []string, fetchIDs []int) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	for i, variableString := range variableStrings {
+		fetchID := fetchIDs[i]
+
+		variables := make(map[string]interface{})
+		err := json.Unmarshal([]byte(variableString), &variables)
+		if err != nil {
+			return nil, err
+		}
+
+		for key, value := range variables {
+			newKey := fmt.Sprintf("f_%d%s", fetchID, key)
+			result[newKey] = value
+		}
+	}
+	return result, nil
+}
+
+func (l *Loader) createMultiFetchQuery(queries []string, fetchIDs []int) ([]byte, error) {
+	multiArgs := make([]string, 0, len(queries))
+	multiQueries := make([]string, 0, len(queries))
+
+	for i, queryString := range queries {
+		fetchID := fetchIDs[i]
+
+		args, query := extractMultiQueryParts(queryString, fetchID)
+		multiArgs = append(multiArgs, args)
+		multiQueries = append(multiQueries, query)
+	}
+
+	return []byte(fmt.Sprintf("query MultiFetch(%s) {\n%s}",
+		strings.Join(multiArgs, ", "),
+		strings.Join(multiQueries, ""))), nil
+}
+
+// extractMultiQueryParts separates variables from the actual query and prefixes all variables for uniqueness
+func extractMultiQueryParts(queryString string, fetchID int) (string, string) {
+	// find and replace all dollar signs in the byte array with the f + fetchID
+	// this is done to avoid conflicts with the variables in the query
+	// TODO: make sure we only replace the dollar signs in the query variables not elsewhere in the query
+	multiQueryString := strings.ReplaceAll(queryString, "$", "$f_"+strconv.Itoa(fetchID))
+
+	// extract all variables from the querystring eg the text between `query(` and the first `)`
+	queryVariables := multiQueryString[strings.Index(multiQueryString, "(")+1 : strings.Index(multiQueryString, ")")]
+
+	// get the raw query string without the arguments and create a alias for the fetch
+	queryStringWithoutArgs := multiQueryString[strings.Index(multiQueryString, "{")+1 : len(multiQueryString)-1]
+	return queryVariables, fmt.Sprintf("f_%d:%s", fetchID, queryStringWithoutArgs)
+}
+
+func (l *Loader) mergeMultiResult(multiNode *FetchTreeNode, res *result) error {
+	statusCode := res.statusCode
+	ds := res.ds
+	goError := res.err
+	loaderHookContext := res.loaderHookContext
+	for _, node := range multiNode.ChildNodes {
+
+		// TODO handle nestedMergeItems when merging
+
+		subResult := &result{
+			out: acquireLoaderBuf(),
+		}
+		var fetchInfo *FetchInfo
+		var postProcessing PostProcessingConfiguration
+		switch f := node.Item.Fetch.(type) {
+		case *BatchEntityFetch:
+			fetchInfo = f.Info
+			postProcessing = f.PostProcessing
+		case *EntityFetch:
+			fetchInfo = f.Info
+			postProcessing = f.PostProcessing
+		default:
+			return fmt.Errorf("unsupported fetch type: %T", f)
+		}
+
+		subResult.init(postProcessing, fetchInfo)
+		resultKey := fmt.Sprintf("f_%d", node.Item.Fetch.Dependencies().FetchID)
+		// extract the data from the result
+		subResultData := gjson.GetBytes(res.out.Bytes(), fmt.Sprintf("data.%s", resultKey))
+		subResult.out.Write([]byte(fmt.Sprintf(`{"data": {"_entities": %s}}`, subResultData.Raw)))
+
+		// run the post processing
+		// merge the result into the final result
+		itemsItems := l.selectItemsForPath(node.Item.FetchPath)
+
+		err := l.mergeResult(node.Item, subResult, itemsItems)
+
+		if l.ctx.LoaderHooks != nil && loaderHookContext != nil {
+			l.ctx.LoaderHooks.OnFinished(loaderHookContext, statusCode, ds, goerrors.Join(goError, l.ctx.subgraphErrors))
+		}
+		if err != nil {
+			return errors.WithStack(err)
+		}
+	}
+	return nil
 }
 
 func (l *Loader) selectItemsForPath(path []FetchItemPathElement) []*astjson.Value {

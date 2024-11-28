@@ -970,6 +970,7 @@ func TestLoader_RedactHeaders(t *testing.T) {
 		t.Errorf("Incorrect fetch type")
 	}
 }
+
 func TestLoader_createMultiQueryPartsFromFetch(t *testing.T) {
 	loader := &Loader{}
 	entityQuery := []byte(`query($representations: [_Any!]!) {
@@ -997,14 +998,14 @@ func TestLoader_createMultiQueryPartsFromFetch(t *testing.T) {
 	finalQuery := append(multiFetchQueryArgs, []byte(fmt.Sprintf("\n%s}", multiFetchQueryContent))...)
 
 	expectedContent := `query MultiFetch($f_1representations: [_Any!]!, $f_2representations: [_Any!]!) {
-f_1: 
+f_1:
 		_entities(representations: $f_1representations) {
 			... on Product {
 				__typename
 				otherField
 			}
 		}
-f_2: 
+f_2:
 		_entities(representations: $f_2representations) {
 			... on User {
 				__typename

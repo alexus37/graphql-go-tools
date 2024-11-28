@@ -296,9 +296,9 @@ func (l *Loader) getMultiFetchInput(multiNode *FetchTreeNode) ([]byte, error) {
 	variableStrings := make([]string, len(multiNode.ChildNodes))
 	var fetchInput []byte
 
-	for _, node := range multiNode.ChildNodes {
+	for i, node := range multiNode.ChildNodes {
 		fetchID := node.Item.Fetch.Dependencies().FetchID
-		fetchIDs = append(fetchIDs, fetchID)
+		fetchIDs[i] = fetchID
 
 		// get http input for the fetch
 		var err error
@@ -312,13 +312,13 @@ func (l *Loader) getMultiFetchInput(multiNode *FetchTreeNode) ([]byte, error) {
 		if err != nil {
 			return []byte{}, err
 		}
-		queryStrings = append(queryStrings, queryString)
+		queryStrings[i] = queryString
 
-		variableString, err := jsonparser.GetString(fetchInput, "body", "variables")
+		variableByte, _, _, err := jsonparser.Get(fetchInput, "body", "variables")
 		if err != nil {
 			return []byte{}, err
 		}
-		variableStrings = append(variableStrings, string(variableString))
+		variableStrings[i] = string(variableByte)
 	}
 
 	finalQuery, err := l.createMultiFetchQuery(queryStrings, fetchIDs)

@@ -122,11 +122,9 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 			itemsItems[i] = l.selectItemsForPath(nodes[i].Item.FetchPath)
 		}
 		g.Go(func() error {
-			// handle the multi case here
 			if nodes[i].Kind == FetchTreeNodeKindMulti {
 				return l.resolveMulti(ctx, nodes[i], results[i])
 			}
-
 			return l.loadFetch(ctx, nodes[i].Item.Fetch, nodes[i].Item, itemsItems[i], results[i])
 		})
 	}
@@ -135,7 +133,7 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 		return errors.WithStack(err)
 	}
 	for i := range results {
-		// if the result is a multi, we need to entangle the results
+		// if the result is a multi, we need to disentangle the results
 		if nodes[i].Kind == FetchTreeNodeKindMulti {
 			err = l.mergeMultiResult(nodes[i], results[i])
 			if err != nil {
@@ -162,7 +160,6 @@ func (l *Loader) resolveParallel(nodes []*FetchTreeNode) error {
 				}
 			}
 		}
-
 	}
 	return nil
 }
@@ -294,47 +291,54 @@ func (l *Loader) resolveMulti(ctx context.Context, multiNode *FetchTreeNode, res
 
 func (l *Loader) getMultiFetchInput(multiNode *FetchTreeNode) ([]byte, error) {
 	// for each fetch create the final http input including the query and the variables
-	multiFetchVariables := make(map[string]interface{})
-	multiFetchQueryArgs := []byte(`query MultiFetch(`)
-	multiFetchQueryContent := []byte{}
+	fetchIDs := make([]int, len(multiNode.ChildNodes))
+	queryStrings := make([]string, len(multiNode.ChildNodes))
+	variableStrings := make([]string, len(multiNode.ChildNodes))
 	var fetchInput []byte
-	var err error
 
-	for i, node := range multiNode.ChildNodes {
+	for _, node := range multiNode.ChildNodes {
+		fetchID := node.Item.Fetch.Dependencies().FetchID
+		fetchIDs = append(fetchIDs, fetchID)
+
 		// get http input for the fetch
+		var err error
 		fetchInput, err = l.createHTTPInput(node)
 		if err != nil {
 			return []byte{}, err
 		}
-		fetchID := node.Item.Fetch.Dependencies().FetchID
 
 		// parse the fetchInput string
-		queryString, _, _, err := jsonparser.Get(fetchInput, "body", "query")
+		queryString, err := jsonparser.GetString(fetchInput, "body", "query")
 		if err != nil {
 			return []byte{}, err
 		}
-		l.createMultiQueryPartsFromFetch(queryString, fetchID, i == len(multiNode.ChildNodes)-1, &multiFetchQueryArgs, &multiFetchQueryContent)
+		queryStrings = append(queryStrings, queryString)
 
-		variableString, _, _, err := jsonparser.Get(fetchInput, "body", "variables")
+		variableString, err := jsonparser.GetString(fetchInput, "body", "variables")
 		if err != nil {
 			return []byte{}, err
 		}
-		// iterate over all the variables in the json and prefix each key with f_fetchID
-		err = l.extractVariablesForMultiQuery(variableString, fetchID, &multiFetchVariables)
-		if err != nil {
-			return []byte{}, err
-		}
+		variableStrings = append(variableStrings, string(variableString))
 	}
 
-	finalQuery := append(multiFetchQueryArgs, []byte(fmt.Sprintf("\n%s}", multiFetchQueryContent))...)
-
-	// create the http multi fetch input using the last fetch input as a template
-	fetchInput, err = sjson.SetBytes(fetchInput, "body.query", string(finalQuery))
+	finalQuery, err := l.createMultiFetchQuery(queryStrings, fetchIDs)
 	if err != nil {
 		return []byte{}, err
 	}
 
-	fetchInput, err = sjson.SetBytes(fetchInput, "body.variables", multiFetchVariables)
+	// iterate over all the variables in the json and prefix each key with f_fetchID
+	variables, err := l.extractMultiFetchVariables(variableStrings, fetchIDs)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	// create the http multi fetch input using the last fetch input as a template
+	fetchInput, err = sjson.SetBytes(fetchInput, "body.query", finalQuery)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	fetchInput, err = sjson.SetBytes(fetchInput, "body.variables", variables)
 	if err != nil {
 		return []byte{}, err
 	}
@@ -353,45 +357,59 @@ func (l *Loader) createHTTPInput(node *FetchTreeNode) ([]byte, error) {
 		fetchInput, _, err := l.getLoadBatchEntityFetchInput(node.Item.Fetch.(*BatchEntityFetch), items)
 		return fetchInput, err
 	default:
-
 		return []byte{}, fmt.Errorf("unsupported fetch type: %T", node.Item.Fetch)
 	}
 }
 
-func (l *Loader) createMultiQueryPartsFromFetch(queryString []byte, fetchID int, isLast bool, multiFetchQueryArgs, multiFetchQueryContent *[]byte) {
+func (l *Loader) extractMultiFetchVariables(variableStrings []string, fetchIDs []int) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	for i, variableString := range variableStrings {
+		fetchID := fetchIDs[i]
+
+		variables := make(map[string]interface{})
+		err := json.Unmarshal([]byte(variableString), &variables)
+		if err != nil {
+			return nil, err
+		}
+
+		for key, value := range variables {
+			newKey := fmt.Sprintf("f_%d%s", fetchID, key)
+			result[newKey] = value
+		}
+	}
+	return result, nil
+}
+
+func (l *Loader) createMultiFetchQuery(queries []string, fetchIDs []int) ([]byte, error) {
+	multiArgs := make([]string, 0, len(queries))
+	multiQueries := make([]string, 0, len(queries))
+
+	for i, queryString := range queries {
+		fetchID := fetchIDs[i]
+
+		args, query := extractMultiQueryParts(queryString, fetchID)
+		multiArgs = append(multiArgs, args)
+		multiQueries = append(multiQueries, query)
+	}
+
+	return []byte(fmt.Sprintf("query MultiFetch(%s) {\n%s}",
+		strings.Join(multiArgs, ", "),
+		strings.Join(multiQueries, ""))), nil
+}
+
+// extractMultiQueryParts separates variables from the actual query and prefixes all variables for uniqueness
+func extractMultiQueryParts(queryString string, fetchID int) (string, string) {
 	// find and replace all dollar signs in the byte array with the f + fetchID
 	// this is done to avoid conflicts with the variables in the query
 	// TODO: make sure we only replace the dollar signs in the query variables not elsewhere in the query
-	multiQueryString := bytes.ReplaceAll(queryString, []byte("$"), []byte("$f_"+strconv.Itoa(fetchID)))
+	multiQueryString := strings.ReplaceAll(queryString, "$", "$f_"+strconv.Itoa(fetchID))
 
 	// extract all variables from the querystring eg the text between `query(` and the first `)`
-	queryVariables := multiQueryString[bytes.Index(multiQueryString, []byte("("))+1 : bytes.Index(multiQueryString, []byte(")"))]
-	*multiFetchQueryArgs = append(*multiFetchQueryArgs, queryVariables...)
-	if isLast {
-		// this is the last fetch, so we need to close the argument list
-		*multiFetchQueryArgs = append(*multiFetchQueryArgs, []byte(") {")...)
-	} else {
-		// more arguments will follow, so we need to add a comma
-		*multiFetchQueryArgs = append(*multiFetchQueryArgs, []byte(", ")...)
-	}
+	queryVariables := multiQueryString[strings.Index(multiQueryString, "(")+1 : strings.Index(multiQueryString, ")")]
 
 	// get the raw query string without the arguments and create a alias for the fetch
-	queryStringWithoutArgs := multiQueryString[bytes.Index(multiQueryString, []byte("{"))+1 : len(multiQueryString)-1]
-	*multiFetchQueryContent = append(*multiFetchQueryContent, []byte(fmt.Sprintf("f_%d:%s", fetchID, queryStringWithoutArgs))...)
-}
-
-func (l *Loader) extractVariablesForMultiQuery(variableString []byte, fetchID int, multiFetchVariables *map[string]interface{}) error {
-	variables := make(map[string]interface{})
-	err := json.Unmarshal(variableString, &variables)
-	if err != nil {
-		return err
-	}
-
-	for key, value := range variables {
-		newKey := fmt.Sprintf("f_%d%s", fetchID, key)
-		(*multiFetchVariables)[newKey] = value
-	}
-	return nil
+	queryStringWithoutArgs := multiQueryString[strings.Index(multiQueryString, "{")+1 : len(multiQueryString)-1]
+	return queryVariables, fmt.Sprintf("f_%d:%s", fetchID, queryStringWithoutArgs)
 }
 
 func (l *Loader) mergeMultiResult(multiNode *FetchTreeNode, res *result) error {

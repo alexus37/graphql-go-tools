@@ -377,7 +377,7 @@ func (l *Loader) createMultiQueryPartsFromFetch(queryString []byte, fetchID int,
 
 	// get the raw query string without the arguments and create a alias for the fetch
 	queryStringWithoutArgs := multiQueryString[bytes.Index(multiQueryString, []byte("{"))+1 : len(multiQueryString)-1]
-	*multiFetchQueryContent = append(*multiFetchQueryContent, []byte(fmt.Sprintf("f_%d: %s", fetchID, queryStringWithoutArgs))...)
+	*multiFetchQueryContent = append(*multiFetchQueryContent, []byte(fmt.Sprintf("f_%d:%s", fetchID, queryStringWithoutArgs))...)
 }
 
 func (l *Loader) extractVariablesForMultiQuery(variableString []byte, fetchID int, multiFetchVariables *map[string]interface{}) error {

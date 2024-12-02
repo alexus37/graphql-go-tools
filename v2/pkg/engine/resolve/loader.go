@@ -319,8 +319,6 @@ func (l *Loader) getMultiFetchInput(multiNode *FetchTreeNode) ([]byte, error) {
 		}
 		queryStrings[i] = queryString
 
-		// variableByte, _, _, err := jsonparser.Get(fetchInput, "body", "variables")
-		// variableObject := v.GetObject("body", "variables").String()
 		variableString := v.GetObject("body", "variables").String()
 		if variableString == "" {
 			return []byte{}, err
@@ -747,10 +745,10 @@ func (l *Loader) mergeResult(fetchItem *FetchItem, res *result, items []*astjson
 		l.resolvable.data = value
 		return nil
 	}
-	if len(items) == 1 && res.batchStats == nil {
-		astjson.MergeValuesWithPath(items[0], value, res.postProcessing.MergePath...)
-		return nil
-	}
+	// if len(items) == 1 && res.batchStats == nil {
+	// 	astjson.MergeValuesWithPath(items[0], value, res.postProcessing.MergePath...)
+	// 	return nil
+	// }
 	batch := value.GetArray()
 	if batch == nil {
 		return l.renderErrorsFailedToFetch(fetchItem, res, invalidGraphQLResponseShape)

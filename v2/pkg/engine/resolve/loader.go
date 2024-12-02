@@ -307,18 +307,25 @@ func (l *Loader) getMultiFetchInput(multiNode *FetchTreeNode) ([]byte, error) {
 			return []byte{}, err
 		}
 
-		// parse the fetchInput string
-		queryString, err := jsonparser.GetString(fetchInput, "body", "query")
+		var p astjson.Parser
+		v, err := p.ParseBytes(fetchInput)
 		if err != nil {
+			return []byte{}, err
+		}
+		// parse the fetchInput string
+		queryString := string(v.GetStringBytes("body", "query"))
+		if queryString == "" {
 			return []byte{}, err
 		}
 		queryStrings[i] = queryString
 
-		variableByte, _, _, err := jsonparser.Get(fetchInput, "body", "variables")
-		if err != nil {
+		// variableByte, _, _, err := jsonparser.Get(fetchInput, "body", "variables")
+		// variableObject := v.GetObject("body", "variables").String()
+		variableString := v.GetObject("body", "variables").String()
+		if variableString == "" {
 			return []byte{}, err
 		}
-		variableStrings[i] = string(variableByte)
+		variableStrings[i] = variableString
 	}
 
 	finalQuery, err := l.createMultiFetchQuery(queryStrings, fetchIDs)

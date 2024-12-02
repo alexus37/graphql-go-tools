@@ -745,11 +745,12 @@ func (l *Loader) mergeResult(fetchItem *FetchItem, res *result, items []*astjson
 		l.resolvable.data = value
 		return nil
 	}
-	// if len(items) == 1 && res.batchStats == nil {
-	// 	astjson.MergeValuesWithPath(items[0], value, res.postProcessing.MergePath...)
-	// 	return nil
-	// }
 	batch := value.GetArray()
+	if len(items) == 1 && batch == nil {
+		astjson.MergeValuesWithPath(items[0], value, res.postProcessing.MergePath...)
+		return nil
+	}
+
 	if batch == nil {
 		return l.renderErrorsFailedToFetch(fetchItem, res, invalidGraphQLResponseShape)
 	}

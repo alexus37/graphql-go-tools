@@ -431,10 +431,12 @@ func (l *Loader) mergeMultiResult(multiNode *FetchTreeNode, res *result) error {
 		}
 		var fetchInfo *FetchInfo
 		var postProcessing PostProcessingConfiguration
+		var wasBatchRequest bool
 		switch f := node.Item.Fetch.(type) {
 		case *BatchEntityFetch:
 			fetchInfo = f.Info
 			postProcessing = f.PostProcessing
+			wasBatchRequest = true
 		case *EntityFetch:
 			fetchInfo = f.Info
 			postProcessing = f.PostProcessing
@@ -447,6 +449,7 @@ func (l *Loader) mergeMultiResult(multiNode *FetchTreeNode, res *result) error {
 		// extract the data from the result
 		subResultData := gjson.GetBytes(res.out.Bytes(), fmt.Sprintf("data.%s", resultKey))
 		subResult.out.Write([]byte(fmt.Sprintf(`{"data": {"_entities": %s}}`, subResultData.Raw)))
+		subResult.wasBatchRequest = wasBatchRequest
 
 		// run the post processing
 		// merge the result into the final result
@@ -745,11 +748,11 @@ func (l *Loader) mergeResult(fetchItem *FetchItem, res *result, items []*astjson
 		l.resolvable.data = value
 		return nil
 	}
-	batch := value.GetArray()
-	if len(items) == 1 && batch == nil {
+	if len(items) == 1 && (res.batchStats == nil && !res.wasBatchRequest) {
 		astjson.MergeValuesWithPath(items[0], value, res.postProcessing.MergePath...)
 		return nil
 	}
+	batch := value.GetArray()
 
 	if batch == nil {
 		return l.renderErrorsFailedToFetch(fetchItem, res, invalidGraphQLResponseShape)
@@ -828,6 +831,7 @@ type result struct {
 
 	rateLimitRejected       bool
 	rateLimitRejectedReason string
+	wasBatchRequest         bool
 
 	// loaderHookContext used to share data between the OnLoad and OnFinished hooks
 	// Only set when the OnLoad is called

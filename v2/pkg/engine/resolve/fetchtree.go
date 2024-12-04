@@ -35,12 +35,22 @@ func Parallel(children ...*FetchTreeNode) *FetchTreeNode {
 }
 
 func Multi(children []*FetchTreeNode) *FetchTreeNode {
+	var fetchInfo *FetchInfo
+	switch f := children[0].Item.Fetch.(type) {
+	case *EntityFetch:
+		fetchInfo = f.Info
+	case *BatchEntityFetch:
+		fetchInfo = f.Info
+	default:
+	}
+
 	return &FetchTreeNode{
 		Kind:       FetchTreeNodeKindMulti,
 		ChildNodes: children,
 		Item: &FetchItem{
 			Fetch: &SingleFetch{
 				Trace: &DataSourceLoadTrace{},
+				Info:  fetchInfo,
 			},
 		},
 	}
@@ -201,6 +211,13 @@ func (n *FetchTreeNode) queryPlan() *FetchTreeQueryPlanNode {
 		Kind: n.Kind,
 	}
 	switch n.Kind {
+	case FetchTreeNodeKindMulti:
+		queryPlan.Fetch = &FetchTreeQueryPlan{
+			Kind: "Multi",
+			// only set the subgraph name and id for the first fetch in the multi node (as a start)
+			SubgraphName: n.Item.Fetch.DataSourceInfo().Name,
+			SubgraphID:   n.Item.Fetch.DataSourceInfo().ID,
+		}
 	case FetchTreeNodeKindSingle:
 		switch f := n.Item.Fetch.(type) {
 		case *SingleFetch:

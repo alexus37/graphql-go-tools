@@ -16,7 +16,12 @@ import (
 
 // TopProducts is the resolver for the topProducts field.
 func (r *queryResolver) TopProducts(ctx context.Context, first *int) ([]*model.Product, error) {
-	return hats, nil
+	if first == nil {
+		return hats, nil
+	} else {
+		safeFirst := max(*first, len(hats))
+		return hats[:safeFirst], nil
+	}
 }
 
 // UpdatedPrice is the resolver for the updatedPrice field.
